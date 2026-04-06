@@ -1,4 +1,4 @@
-# GHL MCP Server — Hawaii Wellness Clinic
+# GHL MCP Server — 
 
 Custom Model Context Protocol server connecting Claude directly to GoHighLevel's full API (~290 endpoints). Enables Claude to generate lead performance reports, manage contacts, send SMS, move pipeline stages, and more — all from a single natural language prompt.
 
@@ -15,7 +15,7 @@ Claude will automatically:
 2. Pull call logs and conversation history per contact
 3. Analyze connection quality (calls >1 min = legitimate connection)
 4. Classify each lead's status and priority
-5. Generate the full Hawaii Wellness Clinic report format
+5. Generate the full lead anaylsis report format
 
 Other prompts you can use:
 - *"Send Affirm financing info via SMS to Jennie and Stefanie BrisenoSanchez"*
