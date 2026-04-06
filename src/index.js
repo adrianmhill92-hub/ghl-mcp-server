@@ -7,20 +7,41 @@ import { createGHLClient } from './ghl-client.js';
 import { analyzeCallData, buildReport, formatReportAsMarkdown } from './report-builder.js';
 import 'dotenv/config';
 
-const API_KEY     = process.env.GHL_API_KEY;
-const LOCATION_ID = process.env.GHL_LOCATION_ID;
-const PORT        = process.env.PORT || 3000;
-const TRANSPORT   = process.env.MCP_TRANSPORT || 'sse';
+const PORT      = process.env.PORT || 3000;
+const TRANSPORT = process.env.MCP_TRANSPORT || 'sse';
 
-if (!API_KEY || !LOCATION_ID) {
+// ─── Sub-account Location Map ─────────────────────────────────────────────────
+// Add each of your GHL sub-accounts here.
+// Format: 'locationId': { name: 'Friendly Name', apiKey: 'your-api-key' }
+const LOCATIONS = {
+  [process.env.GHL_LOCATION_ID]: {
+    name: 'Upstate Ketamine',
+    apiKey: process.env.GHL_API_KEY,
+  },
+  // ADD MORE SUB-ACCOUNTS BELOW:
+  // 'loc_xxxxxxxxxxxxxxxxxx': { name: 'Client B', apiKey: 'pk_live_xxxxxxxx' },
+  // 'loc_yyyyyyyyyyyyyyyyyy': { name: 'Client C', apiKey: 'pk_live_yyyyyyyy' },
+};
+
+const DEFAULT_LOCATION_ID = process.env.GHL_LOCATION_ID;
+
+if (!DEFAULT_LOCATION_ID || !process.env.GHL_API_KEY) {
   console.error('ERROR: GHL_API_KEY and GHL_LOCATION_ID must be set in .env');
   process.exit(1);
 }
 
-const ghl = createGHLClient(API_KEY, LOCATION_ID);
+// ─── Helper: get the right GHL client for a given locationId ─────────────────
+function getClient(locationId) {
+  const id = locationId || DEFAULT_LOCATION_ID;
+  const loc = LOCATIONS[id];
+  if (!loc) throw new Error(`Unknown locationId: ${id}. Add it to the LOCATIONS map in index.js`);
+  return createGHLClient(loc.apiKey, id);
+}
 
 // ─── Tool handler (stateless, shared) ────────────────────────────────────────
 async function handleTool(name, args) {
+  const ghl = getClient(args.locationId);
+
   switch (name) {
     case 'ghl_generate_lead_report': {
       const { startDate, endDate, tags } = args;
@@ -71,6 +92,7 @@ async function handleTool(name, args) {
     case 'ghl_get_tags':                  return ghl.getTags();
     case 'ghl_get_custom_fields':         return ghl.getCustomFields();
     case 'ghl_update_custom_field':       return ghl.updateCustomField(args.contactId, args.customFields);
+    case 'ghl_list_locations':            return { locations: Object.entries(LOCATIONS).map(([id, loc]) => ({ locationId: id, name: loc.name })) };
     default: throw new Error(`Unknown tool: ${name}`);
   }
 }
@@ -78,6 +100,8 @@ async function handleTool(name, args) {
 // ─── Factory: creates a fresh McpServer instance with all tools registered ───
 function createServer() {
   const srv = new McpServer({ name: 'ghl-hwc-mcp', version: '1.0.0' });
+
+  const loc = z.string().optional().describe('GHL Location ID. Omit to use default location.');
 
   function t(name, schema, fn) {
     srv.tool(name, schema, async (args) => {
@@ -90,31 +114,32 @@ function createServer() {
     });
   }
 
-  t('ghl_generate_lead_report', { startDate: z.string(), endDate: z.string(), tags: z.array(z.string()).optional(), pipelineId: z.string().optional() }, (a) => handleTool('ghl_generate_lead_report', a));
-  t('ghl_search_contacts', { query: z.string().optional(), tags: z.array(z.string()).optional(), startDate: z.string().optional(), endDate: z.string().optional(), limit: z.number().optional(), skip: z.number().optional() }, (a) => handleTool('ghl_search_contacts', a));
-  t('ghl_get_contact', { contactId: z.string() }, (a) => handleTool('ghl_get_contact', a));
-  t('ghl_update_contact_stage', { contactId: z.string(), pipelineId: z.string(), stageId: z.string() }, (a) => handleTool('ghl_update_contact_stage', a));
-  t('ghl_add_contact_tag', { contactId: z.string(), tags: z.array(z.string()) }, (a) => handleTool('ghl_add_contact_tag', a));
-  t('ghl_add_contact_note', { contactId: z.string(), body: z.string() }, (a) => handleTool('ghl_add_contact_note', a));
-  t('ghl_get_contact_notes', { contactId: z.string() }, (a) => handleTool('ghl_get_contact_notes', a));
-  t('ghl_get_contact_conversations', { contactId: z.string() }, (a) => handleTool('ghl_get_contact_conversations', a));
-  t('ghl_get_conversation_messages', { conversationId: z.string(), limit: z.number().optional() }, (a) => handleTool('ghl_get_conversation_messages', a));
-  t('ghl_send_sms', { contactId: z.string(), message: z.string() }, (a) => handleTool('ghl_send_sms', a));
-  t('ghl_get_contact_activities', { contactId: z.string() }, (a) => handleTool('ghl_get_contact_activities', a));
-  t('ghl_get_pipelines', {}, (a) => handleTool('ghl_get_pipelines', a));
-  t('ghl_get_opportunities', { pipelineId: z.string().optional(), stageId: z.string().optional(), startDate: z.string().optional(), endDate: z.string().optional(), limit: z.number().optional() }, (a) => handleTool('ghl_get_opportunities', a));
-  t('ghl_move_opportunity', { opportunityId: z.string(), stageId: z.string() }, (a) => handleTool('ghl_move_opportunity', a));
-  t('ghl_get_calendars', {}, (a) => handleTool('ghl_get_calendars', a));
-  t('ghl_get_appointments', { calendarId: z.string(), startTime: z.string(), endTime: z.string() }, (a) => handleTool('ghl_get_appointments', a));
-  t('ghl_create_appointment', { calendarId: z.string(), contactId: z.string(), startTime: z.string(), endTime: z.string(), title: z.string() }, (a) => handleTool('ghl_create_appointment', a));
-  t('ghl_create_task', { contactId: z.string(), title: z.string(), dueDate: z.string(), description: z.string().optional() }, (a) => handleTool('ghl_create_task', a));
-  t('ghl_get_tasks', { contactId: z.string() }, (a) => handleTool('ghl_get_tasks', a));
-  t('ghl_get_workflows', {}, (a) => handleTool('ghl_get_workflows', a));
-  t('ghl_add_to_workflow', { contactId: z.string(), workflowId: z.string() }, (a) => handleTool('ghl_add_to_workflow', a));
-  t('ghl_remove_from_workflow', { contactId: z.string(), workflowId: z.string() }, (a) => handleTool('ghl_remove_from_workflow', a));
-  t('ghl_get_tags', {}, (a) => handleTool('ghl_get_tags', a));
-  t('ghl_get_custom_fields', {}, (a) => handleTool('ghl_get_custom_fields', a));
-  t('ghl_update_custom_field', { contactId: z.string(), customFields: z.array(z.object({ id: z.string(), value: z.string() })) }, (a) => handleTool('ghl_update_custom_field', a));
+  t('ghl_list_locations', {}, (a) => handleTool('ghl_list_locations', a));
+  t('ghl_generate_lead_report', { startDate: z.string(), endDate: z.string(), tags: z.array(z.string()).optional(), pipelineId: z.string().optional(), locationId: loc }, (a) => handleTool('ghl_generate_lead_report', a));
+  t('ghl_search_contacts', { query: z.string().optional(), tags: z.array(z.string()).optional(), startDate: z.string().optional(), endDate: z.string().optional(), limit: z.number().optional(), skip: z.number().optional(), locationId: loc }, (a) => handleTool('ghl_search_contacts', a));
+  t('ghl_get_contact', { contactId: z.string(), locationId: loc }, (a) => handleTool('ghl_get_contact', a));
+  t('ghl_update_contact_stage', { contactId: z.string(), pipelineId: z.string(), stageId: z.string(), locationId: loc }, (a) => handleTool('ghl_update_contact_stage', a));
+  t('ghl_add_contact_tag', { contactId: z.string(), tags: z.array(z.string()), locationId: loc }, (a) => handleTool('ghl_add_contact_tag', a));
+  t('ghl_add_contact_note', { contactId: z.string(), body: z.string(), locationId: loc }, (a) => handleTool('ghl_add_contact_note', a));
+  t('ghl_get_contact_notes', { contactId: z.string(), locationId: loc }, (a) => handleTool('ghl_get_contact_notes', a));
+  t('ghl_get_contact_conversations', { contactId: z.string(), locationId: loc }, (a) => handleTool('ghl_get_contact_conversations', a));
+  t('ghl_get_conversation_messages', { conversationId: z.string(), limit: z.number().optional(), locationId: loc }, (a) => handleTool('ghl_get_conversation_messages', a));
+  t('ghl_send_sms', { contactId: z.string(), message: z.string(), locationId: loc }, (a) => handleTool('ghl_send_sms', a));
+  t('ghl_get_contact_activities', { contactId: z.string(), locationId: loc }, (a) => handleTool('ghl_get_contact_activities', a));
+  t('ghl_get_pipelines', { locationId: loc }, (a) => handleTool('ghl_get_pipelines', a));
+  t('ghl_get_opportunities', { pipelineId: z.string().optional(), stageId: z.string().optional(), startDate: z.string().optional(), endDate: z.string().optional(), limit: z.number().optional(), locationId: loc }, (a) => handleTool('ghl_get_opportunities', a));
+  t('ghl_move_opportunity', { opportunityId: z.string(), stageId: z.string(), locationId: loc }, (a) => handleTool('ghl_move_opportunity', a));
+  t('ghl_get_calendars', { locationId: loc }, (a) => handleTool('ghl_get_calendars', a));
+  t('ghl_get_appointments', { calendarId: z.string(), startTime: z.string(), endTime: z.string(), locationId: loc }, (a) => handleTool('ghl_get_appointments', a));
+  t('ghl_create_appointment', { calendarId: z.string(), contactId: z.string(), startTime: z.string(), endTime: z.string(), title: z.string(), locationId: loc }, (a) => handleTool('ghl_create_appointment', a));
+  t('ghl_create_task', { contactId: z.string(), title: z.string(), dueDate: z.string(), description: z.string().optional(), locationId: loc }, (a) => handleTool('ghl_create_task', a));
+  t('ghl_get_tasks', { contactId: z.string(), locationId: loc }, (a) => handleTool('ghl_get_tasks', a));
+  t('ghl_get_workflows', { locationId: loc }, (a) => handleTool('ghl_get_workflows', a));
+  t('ghl_add_to_workflow', { contactId: z.string(), workflowId: z.string(), locationId: loc }, (a) => handleTool('ghl_add_to_workflow', a));
+  t('ghl_remove_from_workflow', { contactId: z.string(), workflowId: z.string(), locationId: loc }, (a) => handleTool('ghl_remove_from_workflow', a));
+  t('ghl_get_tags', { locationId: loc }, (a) => handleTool('ghl_get_tags', a));
+  t('ghl_get_custom_fields', { locationId: loc }, (a) => handleTool('ghl_get_custom_fields', a));
+  t('ghl_update_custom_field', { contactId: z.string(), customFields: z.array(z.object({ id: z.string(), value: z.string() })), locationId: loc }, (a) => handleTool('ghl_update_custom_field', a));
 
   return srv;
 }
@@ -129,21 +154,17 @@ if (TRANSPORT === 'stdio') {
   const app = express();
   app.use(express.json());
 
-  app.get('/health', (_, res) => res.json({ status: 'ok', location: LOCATION_ID }));
+  app.get('/health', (_, res) => res.json({ status: 'ok', locations: Object.keys(LOCATIONS) }));
 
   const transports = new Map();
 
-  // POST /messages — receives messages for an existing SSE session
   app.post('/messages', async (req, res) => {
     const sessionId = req.query.sessionId;
     const transport = transports.get(sessionId);
-    if (!transport) {
-      return res.status(404).json({ error: 'Session not found' });
-    }
+    if (!transport) return res.status(404).json({ error: 'Session not found' });
     await transport.handlePostMessage(req, res);
   });
 
-  // GET /sse — each connection gets its own fresh McpServer instance
   app.get('/sse', async (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -153,11 +174,9 @@ if (TRANSPORT === 'stdio') {
     const transport = new SSEServerTransport('/messages', res);
     transports.set(transport.sessionId, transport);
 
-    res.on('close', () => {
-      transports.delete(transport.sessionId);
-    });
+    res.on('close', () => { transports.delete(transport.sessionId); });
 
-    const srv = createServer(); // ← fresh instance per connection, no more crash
+    const srv = createServer();
     await srv.connect(transport);
   });
 
