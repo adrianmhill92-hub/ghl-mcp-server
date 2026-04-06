@@ -133,12 +133,11 @@ if (TRANSPORT === 'stdio') {
     await server.connect(transport);
   });
 
-  app.post('/messages', async (req, res) => {
-    const sessionId = req.query.sessionId;
-    const transport = transports.get(sessionId);
-    if (!transport) return res.status(404).json({ error: 'Session not found' });
-    await transport.handlePostMessage(req, res, req.body);
-  });
+  app.get('/sse', async (req, res) => {
+  const transport = new SSEServerTransport('/message', res);
+  const serverInstance = createServer(); // create a NEW instance each time
+  await serverInstance.connect(transport);
+});
 
   app.listen(PORT, () => {
     console.error(`GHL MCP Server running on port ${PORT}`);
