@@ -3,21 +3,34 @@
 const pct = (num, denom) => denom > 0 ? `${Math.round((num / denom) * 100)}%` : '0%';
 
 /**
- * Analyzes call messages to extract attempts, durations, and connections
+ * Analyzes call messages to extract attempts, durations, and connections.
+ * Accepts either a flat array of messages, or GHL's wrapped { messages: [...] } shape.
  */
 export function analyzeCallData(messages) {
-  const calls = (messages || []).filter(m =>
+  // Defensive: accept array, { messages: [...] }, or { messages: { messages: [...] } }
+  const msgArray = Array.isArray(messages)
+    ? messages
+    : Array.isArray(messages?.messages)
+      ? messages.messages
+      : Array.isArray(messages?.messages?.messages)
+        ? messages.messages.messages
+        : [];
+
+  const calls = msgArray.filter(m =>
     m.messageType === 'TYPE_CALL' || m.type === 'call' || m.contentType === 'call'
   );
 
   const callAttempts = calls.map(call => {
-    const duration = call.meta?.duration || call.duration || 0;
+    // GHL nests call details under meta.call.duration / meta.call.status
+    const duration = call.meta?.call?.duration ?? call.meta?.duration ?? call.duration ?? 0;
+    const status = call.meta?.call?.status || call.status || 'unknown';
     const mins = Math.floor(duration / 60);
     const secs = duration % 60;
     return {
       duration,
       durationFormatted: `${mins}:${String(secs).padStart(2, '0')}`,
       connected: duration > 60,
+      status,
       direction: call.direction || 'outbound',
       date: call.dateAdded || call.createdAt,
     };
@@ -59,7 +72,15 @@ export function classifyLeadStatus(contact, callData, messages, notes) {
     return { status: 'Warm --- Callback Pending', priority: 'high' };
   }
 
-  const inboundMessages = (messages || []).filter(m => m.direction === 'inbound');
+  // Inbound text/messages also indicate engagement
+  const msgArray = Array.isArray(messages)
+    ? messages
+    : Array.isArray(messages?.messages)
+      ? messages.messages
+      : Array.isArray(messages?.messages?.messages)
+        ? messages.messages.messages
+        : [];
+  const inboundMessages = msgArray.filter(m => m.direction === 'inbound');
   if (inboundMessages.length > 0) {
     return { status: 'Warm --- Responded', priority: 'medium' };
   }
