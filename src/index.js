@@ -44,22 +44,46 @@ async function handleTool(name, args) {
     case 'ghl_generate_lead_report': {
       const { startDate, endDate, tags } = args;
       const contactsData = await client.searchContacts({ startDate, endDate, tags, limit: 200 });
-      const contacts = contactsData.contacts || [];
+
+      // Log raw shape so we can debug response format issues
+      console.error('searchContacts response keys:', Object.keys(contactsData || {}));
+
+      // v2 may return contacts under different keys depending on account
+      const contacts =
+        contactsData?.contacts ||
+        contactsData?.data ||
+        contactsData?.results ||
+        [];
+
+      console.error(`Found ${contacts.length} contacts for report`);
+
+      if (contacts.length === 0) {
+        return {
+          report: null,
+          markdown: `# No leads found\n\nNo contacts matched the criteria:\n- **Period:** ${startDate} to ${endDate}\n- **Tags:** ${tags?.join(', ') || 'none'}\n- **Location:** ${args.locationId || LOCATION_ID}`,
+          contactCount: 0,
+        };
+      }
+
       const enriched = await Promise.all(contacts.map(async (contact) => {
         try {
           const [convData, notesData] = await Promise.all([
-            client.getContactConversations(contact.id),
+            client.getContactConversations(contact.id).catch((e) => {
+              console.error(`getContactConversations failed for ${contact.id}:`, e.message);
+              return { conversations: [] };
+            }),
             client.getContactNotes(contact.id).catch(() => ({ notes: [] })),
           ]);
           const conversations = convData?.conversations || [];
           let messages = [];
           if (conversations.length > 0) {
-            const msgData = await client.getConversationMessages(conversations[0].id);
+            const msgData = await client.getConversationMessages(conversations[0].id).catch(() => ({ messages: [] }));
             messages = msgData?.messages || [];
           }
           const callData = analyzeCallData(messages);
           return { contact, callData, messages, notes: notesData };
-        } catch {
+        } catch (err) {
+          console.error(`Enrichment failed for contact ${contact.id}:`, err.message);
           return { contact, callData: { totalAttempts: 0, connected: false, durations: [], callAttempts: [], connectionCount: 0, longestCall: 0 }, messages: [], notes: [] };
         }
       }));
@@ -105,7 +129,11 @@ function createServer() {
         const result = await fn(args);
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
-        return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+        console.error(`Tool ${name} failed:`, err.message, err.stack);
+        const detail = err.response?.data
+          ? `${err.message} | GHL response: ${JSON.stringify(err.response.data)}`
+          : err.message;
+        return { content: [{ type: 'text', text: `Error in ${name}: ${detail}` }], isError: true };
       }
     });
   }
@@ -167,35 +195,31 @@ if (TRANSPORT === 'stdio') {
   );
 
   // ─── Streamable HTTP transport (modern, Claude connectors) ──────────────────
-  // Single endpoint at /mcp handles GET (open stream), POST (send message),
-  // and DELETE (close session). Sessions are tracked by mcp-session-id header.
-  const httpTransports = new Map();
-
+  // Stateless mode: each request creates a fresh transport + server.
+  // Avoids session-handshake bugs and works reliably with remote MCP clients.
   app.all('/mcp', async (req, res) => {
     try {
-      const sessionId = req.headers['mcp-session-id'];
-      let transport = sessionId ? httpTransports.get(sessionId) : undefined;
+      const srv = createServer();
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined, // stateless
+      });
 
-      if (!transport) {
-        transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => randomUUID(),
-          onsessioninitialized: (id) => {
-            httpTransports.set(id, transport);
-          },
-        });
+      res.on('close', () => {
+        transport.close();
+        srv.close();
+      });
 
-        transport.onclose = () => {
-          if (transport.sessionId) httpTransports.delete(transport.sessionId);
-        };
-
-        const srv = createServer();
-        await srv.connect(transport);
-      }
-
+      await srv.connect(transport);
       await transport.handleRequest(req, res, req.body);
     } catch (err) {
       console.error('Streamable HTTP error:', err);
-      if (!res.headersSent) res.status(500).json({ error: err.message });
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: '2.0',
+          error: { code: -32603, message: 'Internal server error' },
+          id: null,
+        });
+      }
     }
   });
 
