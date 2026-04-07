@@ -7,54 +7,52 @@ import { createGHLClient } from './ghl-client.js';
 import { analyzeCallData, buildReport, formatReportAsMarkdown } from './report-builder.js';
 import 'dotenv/config';
 
-const PORT      = process.env.PORT || 3000;
-const TRANSPORT = process.env.MCP_TRANSPORT || 'sse';
+const API_KEY     = process.env.GHL_API_KEY;
+const LOCATION_ID = process.env.GHL_LOCATION_ID;
+const PORT        = process.env.PORT || 3000;
+const TRANSPORT   = process.env.MCP_TRANSPORT || 'sse';
+
+if (!API_KEY || !LOCATION_ID) {
+  console.error('ERROR: GHL_API_KEY and GHL_LOCATION_ID must be set in .env');
+  process.exit(1);
+}
 
 // ─── Sub-account Location Map ─────────────────────────────────────────────────
 const LOCATIONS = {
-  [process.env.GHL_LOCATION_ID]: {
-    name: 'Upstate Ketamine',
-    apiKey: process.env.GHL_API_KEY,
-  },
+  [LOCATION_ID]: { name: 'Upstate Ketamine', apiKey: API_KEY },
   'tMqk4gZoIz7MCqcIQBFr': { name: 'Mobile Wound Care', apiKey: 'pit-85ca92cc-6cd3-463c-9fa3-e4926b4272cf' },
   '1PLFqlVhlxWLklTAuQtK': { name: 'Advanced Remedy Center', apiKey: 'pit-19589354-e833-4548-bb36-30ac22b1a981' },
   '2HXWvQvzfMHgty2hFtKk': { name: 'MY Self Wellness', apiKey: 'pit-ed4c2afc-db06-4ea8-ab5c-ba8a71511c21' },
 };
 
-const DEFAULT_LOCATION_ID = process.env.GHL_LOCATION_ID;
-
-if (!DEFAULT_LOCATION_ID || !process.env.GHL_API_KEY) {
-  console.error('ERROR: GHL_API_KEY and GHL_LOCATION_ID must be set in .env');
-  process.exit(1);
-}
-
-// ─── Helper: get the right GHL client for a given locationId ─────────────────
 function getClient(locationId) {
-  const id = locationId || DEFAULT_LOCATION_ID;
+  const id = locationId || LOCATION_ID;
   const loc = LOCATIONS[id];
-  if (!loc) throw new Error(`Unknown locationId: ${id}. Add it to the LOCATIONS map in index.js`);
+  if (!loc) throw new Error(`Unknown locationId: ${id}`);
   return createGHLClient(loc.apiKey, id);
 }
 
+const ghl = createGHLClient(API_KEY, LOCATION_ID);
+
 // ─── Tool handler ─────────────────────────────────────────────────────────────
 async function handleTool(name, args) {
-  const ghl = getClient(args.locationId);
+  const client = args.locationId ? getClient(args.locationId) : ghl;
 
   switch (name) {
     case 'ghl_generate_lead_report': {
       const { startDate, endDate, tags } = args;
-      const contactsData = await ghl.searchContacts({ startDate, endDate, tags, limit: 200 });
+      const contactsData = await client.searchContacts({ startDate, endDate, tags, limit: 200 });
       const contacts = contactsData.contacts || [];
       const enriched = await Promise.all(contacts.map(async (contact) => {
         try {
           const [convData, notesData] = await Promise.all([
-            ghl.getContactConversations(contact.id),
-            ghl.getContactNotes(contact.id).catch(() => ({ notes: [] })),
+            client.getContactConversations(contact.id),
+            client.getContactNotes(contact.id).catch(() => ({ notes: [] })),
           ]);
           const conversations = convData?.conversations || [];
           let messages = [];
           if (conversations.length > 0) {
-            const msgData = await ghl.getConversationMessages(conversations[0].id);
+            const msgData = await client.getConversationMessages(conversations[0].id);
             messages = msgData?.messages || [];
           }
           const callData = analyzeCallData(messages);
@@ -66,30 +64,30 @@ async function handleTool(name, args) {
       const report = buildReport({ contacts: enriched, startDate, endDate, preparedDate: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) });
       return { report, markdown: formatReportAsMarkdown(report), contactCount: contacts.length };
     }
-    case 'ghl_search_contacts':           return ghl.searchContacts(args);
-    case 'ghl_get_contact':               return ghl.getContact(args.contactId);
-    case 'ghl_update_contact_stage':      return ghl.updateContactStage(args.contactId, args.pipelineId, args.stageId);
-    case 'ghl_add_contact_tag':           return ghl.addContactTag(args.contactId, args.tags);
-    case 'ghl_add_contact_note':          return ghl.addContactNote(args.contactId, args.body);
-    case 'ghl_get_contact_notes':         return ghl.getContactNotes(args.contactId);
-    case 'ghl_get_contact_conversations': return ghl.getContactConversations(args.contactId);
-    case 'ghl_get_conversation_messages': return ghl.getConversationMessages(args.conversationId, args.limit);
-    case 'ghl_send_sms':                  return ghl.sendSMS(args.contactId, args.message);
-    case 'ghl_get_contact_activities':    return ghl.getContactActivities(args.contactId);
-    case 'ghl_get_pipelines':             return ghl.getPipelines();
-    case 'ghl_get_opportunities':         return ghl.getOpportunities(args);
-    case 'ghl_move_opportunity':          return ghl.moveOpportunity(args.opportunityId, args.stageId);
-    case 'ghl_get_calendars':             return ghl.getCalendars();
-    case 'ghl_get_appointments':          return ghl.getCalendarAppointments(args.calendarId, args.startTime, args.endTime);
-    case 'ghl_create_appointment':        return ghl.createAppointment(args);
-    case 'ghl_create_task':               return ghl.createTask(args.contactId, { title: args.title, dueDate: args.dueDate, description: args.description });
-    case 'ghl_get_tasks':                 return ghl.getTasks(args.contactId);
-    case 'ghl_get_workflows':             return ghl.getWorkflows();
-    case 'ghl_add_to_workflow':           return ghl.addContactToWorkflow(args.contactId, args.workflowId);
-    case 'ghl_remove_from_workflow':      return ghl.removeContactFromWorkflow(args.contactId, args.workflowId);
-    case 'ghl_get_tags':                  return ghl.getTags();
-    case 'ghl_get_custom_fields':         return ghl.getCustomFields();
-    case 'ghl_update_custom_field':       return ghl.updateCustomField(args.contactId, args.customFields);
+    case 'ghl_search_contacts':           return client.searchContacts(args);
+    case 'ghl_get_contact':               return client.getContact(args.contactId);
+    case 'ghl_update_contact_stage':      return client.updateContactStage(args.contactId, args.pipelineId, args.stageId);
+    case 'ghl_add_contact_tag':           return client.addContactTag(args.contactId, args.tags);
+    case 'ghl_add_contact_note':          return client.addContactNote(args.contactId, args.body);
+    case 'ghl_get_contact_notes':         return client.getContactNotes(args.contactId);
+    case 'ghl_get_contact_conversations': return client.getContactConversations(args.contactId);
+    case 'ghl_get_conversation_messages': return client.getConversationMessages(args.conversationId, args.limit);
+    case 'ghl_send_sms':                  return client.sendSMS(args.contactId, args.message);
+    case 'ghl_get_contact_activities':    return client.getContactActivities(args.contactId);
+    case 'ghl_get_pipelines':             return client.getPipelines();
+    case 'ghl_get_opportunities':         return client.getOpportunities(args);
+    case 'ghl_move_opportunity':          return client.moveOpportunity(args.opportunityId, args.stageId);
+    case 'ghl_get_calendars':             return client.getCalendars();
+    case 'ghl_get_appointments':          return client.getCalendarAppointments(args.calendarId, args.startTime, args.endTime);
+    case 'ghl_create_appointment':        return client.createAppointment(args);
+    case 'ghl_create_task':               return client.createTask(args.contactId, { title: args.title, dueDate: args.dueDate, description: args.description });
+    case 'ghl_get_tasks':                 return client.getTasks(args.contactId);
+    case 'ghl_get_workflows':             return client.getWorkflows();
+    case 'ghl_add_to_workflow':           return client.addContactToWorkflow(args.contactId, args.workflowId);
+    case 'ghl_remove_from_workflow':      return client.removeContactFromWorkflow(args.contactId, args.workflowId);
+    case 'ghl_get_tags':                  return client.getTags();
+    case 'ghl_get_custom_fields':         return client.getCustomFields();
+    case 'ghl_update_custom_field':       return client.updateCustomField(args.contactId, args.customFields);
     case 'ghl_list_locations':            return { locations: Object.entries(LOCATIONS).map(([id, loc]) => ({ locationId: id, name: loc.name })) };
     default: throw new Error(`Unknown tool: ${name}`);
   }
@@ -98,7 +96,6 @@ async function handleTool(name, args) {
 // ─── Factory ──────────────────────────────────────────────────────────────────
 function createServer() {
   const srv = new McpServer({ name: 'ghl-hwc-mcp', version: '1.0.0' });
-  const loc = z.string().optional().describe('GHL Location ID. Omit to use default location.');
 
   function t(name, schema, fn) {
     srv.tool(name, schema, async (args) => {
@@ -110,6 +107,8 @@ function createServer() {
       }
     });
   }
+
+  const loc = z.string().optional().describe('GHL Location ID. Omit to use default.');
 
   t('ghl_list_locations', {}, (a) => handleTool('ghl_list_locations', a));
   t('ghl_generate_lead_report', { startDate: z.string(), endDate: z.string(), tags: z.array(z.string()).optional(), pipelineId: z.string().optional(), locationId: loc }, (a) => handleTool('ghl_generate_lead_report', a));
@@ -151,26 +150,14 @@ if (TRANSPORT === 'stdio') {
   const app = express();
   app.use(express.json());
 
-  // ── CORS ── allow Claude.ai to reach this server
-  app.use((req, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, mcp-session-id');
-    if (req.method === 'OPTIONS') return res.sendStatus(200);
-    next();
-  });
-
-  app.get('/health', (_, res) => res.json({ status: 'ok', locations: Object.keys(LOCATIONS) }));
+  app.get('/health', (_, res) => res.json({ status: 'ok', location: LOCATION_ID, locations: Object.keys(LOCATIONS) }));
 
   const transports = new Map();
 
   app.post('/messages', async (req, res) => {
     const sessionId = req.query.sessionId;
     const transport = transports.get(sessionId);
-    if (!transport) {
-      console.error(`Session not found: ${sessionId}, active sessions: ${[...transports.keys()].join(', ')}`);
-      return res.status(404).json({ error: 'Session not found' });
-    }
+    if (!transport) return res.status(404).json({ error: 'Session not found' });
     await transport.handlePostMessage(req, res);
   });
 
@@ -179,16 +166,11 @@ if (TRANSPORT === 'stdio') {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('X-Accel-Buffering', 'no');
 
     const transport = new SSEServerTransport('/messages', res);
     transports.set(transport.sessionId, transport);
-    console.error(`New SSE session: ${transport.sessionId}`);
 
-    res.on('close', () => {
-      console.error(`SSE session closed: ${transport.sessionId}`);
-      transports.delete(transport.sessionId);
-    });
+    res.on('close', () => { transports.delete(transport.sessionId); });
 
     const srv = createServer();
     await srv.connect(transport);
