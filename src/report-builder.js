@@ -1,6 +1,8 @@
 // Builds the lead performance report from raw GHL data
 // Mirrors the Hawaii Wellness Clinic report format exactly
 
+const pct = (num, denom) => denom > 0 ? `${Math.round((num / denom) * 100)}%` : '0%';
+
 /**
  * Analyzes call messages to extract:
  * - Number of call attempts
@@ -114,12 +116,14 @@ export function buildReport({ contacts, startDate, endDate, preparedDate }) {
     const nextAction = generateNextAction(status, callData, contact);
 
     const createdDate = new Date(contact.dateAdded || contact.createdAt);
-    const createdFormatted = createdDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const createdFormatted = isNaN(createdDate.getTime())
+      ? 'Unknown'
+      : createdDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
     return {
       number: index + 1,
       id: contact.id,
-      name: `${contact.firstName || ''} ${contact.lastName || ''}`.trim(),
+      name: `${contact.firstName || ''} ${contact.lastName || ''}`.trim() || 'Unnamed Contact',
       created: createdFormatted,
       callAttempts: callData.totalAttempts,
       connected: callData.connected
@@ -143,7 +147,7 @@ export function buildReport({ contacts, startDate, endDate, preparedDate }) {
   const warmActive = leads.filter(l => l.status.includes('Warm') || l.status.includes('Active')).length;
   const lost = leads.filter(l => l.status.includes('Lost')).length;
   const totalCalls = leads.reduce((sum, l) => sum + l.rawCallData.totalAttempts, 0);
-  const avgCallAttempts = total > 0 ? (totalCalls / total).toFixed(1) : 0;
+  const avgCallAttempts = total > 0 ? (totalCalls / total).toFixed(1) : '0.0';
   const highPriority = leads.filter(l => l.priority === 'high');
 
   // Call distribution
@@ -158,13 +162,13 @@ export function buildReport({ contacts, startDate, endDate, preparedDate }) {
     summary: {
       total,
       legitimateConnections,
-      connectionRate: `${Math.round((legitimateConnections / total) * 100)}%`,
+      connectionRate: pct(legitimateConnections, total),
       booked,
-      bookingRate: `${Math.round((booked / total) * 100)}%`,
+      bookingRate: pct(booked, total),
       activeNurture,
       warmActive,
       lost,
-      lostRate: `${Math.round((lost / total) * 100)}%`,
+      lostRate: pct(lost, total),
       avgCallAttempts,
       highPriorityCount: highPriority.length,
     },
@@ -173,7 +177,7 @@ export function buildReport({ contacts, startDate, endDate, preparedDate }) {
     mediumPriority: leads.filter(l => l.priority === 'medium').map(l => ({ name: l.name, action: l.nextAction })),
     callDistribution: callDist,
     analytics: {
-      connectionRate: `${Math.round((legitimateConnections / total) * 100)}%`,
+      connectionRate: pct(legitimateConnections, total),
       avgCallAttempts,
       leadsWithAnyCall: leads.filter(l => l.rawCallData.totalAttempts > 0).length,
     },
@@ -226,15 +230,23 @@ export function formatReportAsMarkdown(report) {
   lines.push('');
   lines.push('### 3a. High Priority — Act Today');
   lines.push('');
-  for (const item of report.highPriority) {
-    lines.push(`- **${item.name}**: ${item.action}`);
+  if (report.highPriority.length === 0) {
+    lines.push('_None_');
+  } else {
+    for (const item of report.highPriority) {
+      lines.push(`- **${item.name}**: ${item.action}`);
+    }
   }
 
   lines.push('');
   lines.push('### 3b. Medium Priority — This Week');
   lines.push('');
-  for (const item of report.mediumPriority) {
-    lines.push(`- **${item.name}**: ${item.action}`);
+  if (report.mediumPriority.length === 0) {
+    lines.push('_None_');
+  } else {
+    for (const item of report.mediumPriority) {
+      lines.push(`- **${item.name}**: ${item.action}`);
+    }
   }
 
   lines.push('');
@@ -247,8 +259,10 @@ export function formatReportAsMarkdown(report) {
   lines.push('| Call Attempts | # of Leads | % of Total |');
   lines.push('|--------------|-----------|-----------|');
   for (const row of report.callDistribution) {
-    const pct = Math.round((row.count / report.summary.total) * 100);
-    lines.push(`| ${row.attempts} | ${row.count} | ${pct}% |`);
+    const rowPct = report.summary.total > 0
+      ? `${Math.round((row.count / report.summary.total) * 100)}%`
+      : '0%';
+    lines.push(`| ${row.attempts} | ${row.count} | ${rowPct} |`);
   }
 
   lines.push('');
