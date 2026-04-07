@@ -36,7 +36,7 @@ function getClient(locationId) {
   return createGHLClient(loc.apiKey, id);
 }
 
-// ─── Tool handler (stateless, shared) ────────────────────────────────────────
+// ─── Tool handler ─────────────────────────────────────────────────────────────
 async function handleTool(name, args) {
   const ghl = getClient(args.locationId);
 
@@ -95,10 +95,9 @@ async function handleTool(name, args) {
   }
 }
 
-// ─── Factory: creates a fresh McpServer instance with all tools registered ───
+// ─── Factory ──────────────────────────────────────────────────────────────────
 function createServer() {
   const srv = new McpServer({ name: 'ghl-hwc-mcp', version: '1.0.0' });
-
   const loc = z.string().optional().describe('GHL Location ID. Omit to use default location.');
 
   function t(name, schema, fn) {
@@ -152,6 +151,15 @@ if (TRANSPORT === 'stdio') {
   const app = express();
   app.use(express.json());
 
+  // ── CORS ── allow Claude.ai to reach this server
+  app.use((req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, mcp-session-id');
+    if (req.method === 'OPTIONS') return res.sendStatus(200);
+    next();
+  });
+
   app.get('/health', (_, res) => res.json({ status: 'ok', locations: Object.keys(LOCATIONS) }));
 
   const transports = new Map();
@@ -159,7 +167,10 @@ if (TRANSPORT === 'stdio') {
   app.post('/messages', async (req, res) => {
     const sessionId = req.query.sessionId;
     const transport = transports.get(sessionId);
-    if (!transport) return res.status(404).json({ error: 'Session not found' });
+    if (!transport) {
+      console.error(`Session not found: ${sessionId}, active sessions: ${[...transports.keys()].join(', ')}`);
+      return res.status(404).json({ error: 'Session not found' });
+    }
     await transport.handlePostMessage(req, res);
   });
 
@@ -168,11 +179,16 @@ if (TRANSPORT === 'stdio') {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('X-Accel-Buffering', 'no');
 
     const transport = new SSEServerTransport('/messages', res);
     transports.set(transport.sessionId, transport);
+    console.error(`New SSE session: ${transport.sessionId}`);
 
-    res.on('close', () => { transports.delete(transport.sessionId); });
+    res.on('close', () => {
+      console.error(`SSE session closed: ${transport.sessionId}`);
+      transports.delete(transport.sessionId);
+    });
 
     const srv = createServer();
     await srv.connect(transport);
