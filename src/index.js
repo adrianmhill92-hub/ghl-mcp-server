@@ -1,7 +1,9 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import express from 'express';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { createGHLClient } from './ghl-client.js';
 import { analyzeCallData, buildReport, formatReportAsMarkdown } from './report-builder.js';
@@ -10,7 +12,7 @@ import 'dotenv/config';
 const API_KEY     = process.env.GHL_API_KEY;
 const LOCATION_ID = process.env.GHL_LOCATION_ID;
 const PORT        = process.env.PORT || 3000;
-const TRANSPORT   = process.env.MCP_TRANSPORT || 'sse';
+const TRANSPORT   = process.env.MCP_TRANSPORT || 'http';
 
 if (!API_KEY || !LOCATION_ID) {
   console.error('ERROR: GHL_API_KEY and GHL_LOCATION_ID must be set in .env');
@@ -150,13 +152,59 @@ if (TRANSPORT === 'stdio') {
   const app = express();
   app.use(express.json());
 
-  app.get('/health', (_, res) => res.json({ status: 'ok', location: LOCATION_ID, locations: Object.keys(LOCATIONS) }));
+  // CORS for browser-based clients and Claude's connector fetcher
+  app.use((req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, mcp-session-id');
+    res.setHeader('Access-Control-Expose-Headers', 'mcp-session-id');
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+    next();
+  });
 
-  const transports = new Map();
+  app.get('/health', (_, res) =>
+    res.json({ status: 'ok', location: LOCATION_ID, locations: Object.keys(LOCATIONS) })
+  );
+
+  // ─── Streamable HTTP transport (modern, Claude connectors) ──────────────────
+  // Single endpoint at /mcp handles GET (open stream), POST (send message),
+  // and DELETE (close session). Sessions are tracked by mcp-session-id header.
+  const httpTransports = new Map();
+
+  app.all('/mcp', async (req, res) => {
+    try {
+      const sessionId = req.headers['mcp-session-id'];
+      let transport = sessionId ? httpTransports.get(sessionId) : undefined;
+
+      if (!transport) {
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (id) => {
+            httpTransports.set(id, transport);
+          },
+        });
+
+        transport.onclose = () => {
+          if (transport.sessionId) httpTransports.delete(transport.sessionId);
+        };
+
+        const srv = createServer();
+        await srv.connect(transport);
+      }
+
+      await transport.handleRequest(req, res, req.body);
+    } catch (err) {
+      console.error('Streamable HTTP error:', err);
+      if (!res.headersSent) res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─── Legacy SSE transport (kept for backward compatibility) ─────────────────
+  const sseTransports = new Map();
 
   app.post('/messages', async (req, res) => {
     const sessionId = req.query.sessionId;
-    const transport = transports.get(sessionId);
+    const transport = sseTransports.get(sessionId);
     if (!transport) return res.status(404).json({ error: 'Session not found' });
     await transport.handlePostMessage(req, res);
   });
@@ -165,12 +213,11 @@ if (TRANSPORT === 'stdio') {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
-    res.setHeader('Access-Control-Allow-Origin', '*');
 
     const transport = new SSEServerTransport('/messages', res);
-    transports.set(transport.sessionId, transport);
+    sseTransports.set(transport.sessionId, transport);
 
-    res.on('close', () => { transports.delete(transport.sessionId); });
+    res.on('close', () => sseTransports.delete(transport.sessionId));
 
     const srv = createServer();
     await srv.connect(transport);
@@ -178,5 +225,8 @@ if (TRANSPORT === 'stdio') {
 
   app.listen(PORT, () => {
     console.error(`GHL MCP Server running on port ${PORT}`);
+    console.error(`  Streamable HTTP: /mcp`);
+    console.error(`  Legacy SSE:      /sse`);
+    console.error(`  Health:          /health`);
   });
 }
