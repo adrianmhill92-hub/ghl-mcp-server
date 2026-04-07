@@ -43,12 +43,14 @@ async function handleTool(name, args) {
   switch (name) {
     case 'ghl_generate_lead_report': {
       const { startDate, endDate, tags } = args;
-      const contactsData = await client.searchContacts({ startDate, endDate, tags, limit: 200 });
 
-      // Log raw shape so we can debug response format issues
+      // Keep search small enough to enrich within Railway's 15s edge timeout
+      const SEARCH_LIMIT = 25;
+      const ENRICH_CONCURRENCY = 4;
+
+      const contactsData = await client.searchContacts({ startDate, endDate, tags, limit: SEARCH_LIMIT });
       console.error('searchContacts response keys:', Object.keys(contactsData || {}));
 
-      // v2 may return contacts under different keys depending on account
       const contacts =
         contactsData?.contacts ||
         contactsData?.data ||
@@ -65,7 +67,9 @@ async function handleTool(name, args) {
         };
       }
 
-      const enriched = await Promise.all(contacts.map(async (contact) => {
+      // Enrich contacts in batches of ENRICH_CONCURRENCY to avoid GHL rate limits
+      // and to fit comfortably within Railway's 15s edge proxy timeout
+      const enrichOne = async (contact) => {
         try {
           const [convData, notesData] = await Promise.all([
             client.getContactConversations(contact.id).catch((e) => {
@@ -86,7 +90,16 @@ async function handleTool(name, args) {
           console.error(`Enrichment failed for contact ${contact.id}:`, err.message);
           return { contact, callData: { totalAttempts: 0, connected: false, durations: [], callAttempts: [], connectionCount: 0, longestCall: 0 }, messages: [], notes: [] };
         }
-      }));
+      };
+
+      const enriched = [];
+      for (let i = 0; i < contacts.length; i += ENRICH_CONCURRENCY) {
+        const batch = contacts.slice(i, i + ENRICH_CONCURRENCY);
+        const results = await Promise.all(batch.map(enrichOne));
+        enriched.push(...results);
+        console.error(`Enriched ${enriched.length}/${contacts.length}`);
+      }
+
       const report = buildReport({ contacts: enriched, startDate, endDate, preparedDate: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) });
       return { report, markdown: formatReportAsMarkdown(report), contactCount: contacts.length };
     }
