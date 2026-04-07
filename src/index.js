@@ -11,16 +11,14 @@ const PORT      = process.env.PORT || 3000;
 const TRANSPORT = process.env.MCP_TRANSPORT || 'sse';
 
 // ─── Sub-account Location Map ─────────────────────────────────────────────────
-// Add each of your GHL sub-accounts here.
-// Format: 'locationId': { name: 'Friendly Name', apiKey: 'your-api-key' }
 const LOCATIONS = {
   [process.env.GHL_LOCATION_ID]: {
     name: 'Upstate Ketamine',
     apiKey: process.env.GHL_API_KEY,
   },
-  // ADD MORE SUB-ACCOUNTS BELOW:
-  // 'loc_xxxxxxxxxxxxxxxxxx': { name: 'Client B', apiKey: 'pk_live_xxxxxxxx' },
-  // 'loc_yyyyyyyyyyyyyyyyyy': { name: 'Client C', apiKey: 'pk_live_yyyyyyyy' },
+  'tMqk4gZoIz7MCqcIQBFr': { name: 'Mobile Wound Care', apiKey: 'pit-85ca92cc-6cd3-463c-9fa3-e4926b4272cf' },
+  '1PLFqlVhlxWLklTAuQtK': { name: 'Advanced Remedy Center', apiKey: 'pit-19589354-e833-4548-bb36-30ac22b1a981' },
+  '2HXWvQvzfMHgty2hFtKk': { name: 'MY Self Wellness', apiKey: 'pit-ed4c2afc-db06-4ea8-ab5c-ba8a71511c21' },
 };
 
 const DEFAULT_LOCATION_ID = process.env.GHL_LOCATION_ID;
