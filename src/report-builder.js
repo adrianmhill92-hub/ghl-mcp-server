@@ -1,13 +1,9 @@
 // Builds the lead performance report from raw GHL data
-// Mirrors the Hawaii Wellness Clinic report format exactly
 
 const pct = (num, denom) => denom > 0 ? `${Math.round((num / denom) * 100)}%` : '0%';
 
 /**
- * Analyzes call messages to extract:
- * - Number of call attempts
- * - Duration of each call
- * - Whether any call was a legitimate connection (>1 min)
+ * Analyzes call messages to extract attempts, durations, and connections
  */
 export function analyzeCallData(messages) {
   const calls = (messages || []).filter(m =>
@@ -15,7 +11,7 @@ export function analyzeCallData(messages) {
   );
 
   const callAttempts = calls.map(call => {
-    const duration = call.meta?.duration || call.duration || 0; // seconds
+    const duration = call.meta?.duration || call.duration || 0;
     const mins = Math.floor(duration / 60);
     const secs = duration % 60;
     return {
@@ -39,44 +35,35 @@ export function analyzeCallData(messages) {
   };
 }
 
-/**
- * Determines lead status based on call data, tags, and pipeline stage
- */
 export function classifyLeadStatus(contact, callData, messages, notes) {
   const tags = contact.tags || [];
   const stageName = contact.pipelineStage?.name || '';
 
-  // DND check
   if (contact.dnd || tags.includes('DND') || tags.includes('stop')) {
     return { status: 'Lost --- DND', priority: 'none' };
   }
 
-  // Lost checks
   if (stageName.toLowerCase().includes('lost') || tags.includes('lost')) {
     const lostReason = tags.find(t => ['insurance', 'price', 'abandoned'].includes(t.toLowerCase()));
     return { status: `Lost --- ${lostReason || 'Disqualified'}`, priority: 'none' };
   }
 
-  // Booked check
   if (stageName.toLowerCase().includes('booked') || stageName.toLowerCase().includes('consult')) {
     return { status: 'Booked --- Consult', priority: 'high' };
   }
 
-  // Connected check
   if (callData.connected) {
-    if (callData.longestCall >= 600) { // 10+ min call
+    if (callData.longestCall >= 600) {
       return { status: 'Active Communication', priority: 'high' };
     }
     return { status: 'Warm --- Callback Pending', priority: 'high' };
   }
 
-  // Check for text/message responses from lead
   const inboundMessages = (messages || []).filter(m => m.direction === 'inbound');
   if (inboundMessages.length > 0) {
     return { status: 'Warm --- Responded', priority: 'medium' };
   }
 
-  // Nurture classification by attempt count
   const attempts = callData.totalAttempts;
   if (attempts === 0) return { status: 'Nurture --- New', priority: 'low' };
   if (attempts === 1) return { status: 'Nurture --- 1st Attempt', priority: 'low' };
@@ -84,9 +71,6 @@ export function classifyLeadStatus(contact, callData, messages, notes) {
   return { status: `Nurture --- ${attempts}rd Attempt`, priority: 'low' };
 }
 
-/**
- * Generates next action recommendation based on status and contact data
- */
 export function generateNextAction(status, callData, contact) {
   const name = contact.firstName || 'Lead';
 
@@ -106,9 +90,6 @@ export function generateNextAction(status, callData, contact) {
   return 'Continue nurture sequence.';
 }
 
-/**
- * Builds the full structured report from an array of contact data objects
- */
 export function buildReport({ contacts, startDate, endDate, preparedDate }) {
   const leads = contacts.map((item, index) => {
     const { contact, callData, messages, notes } = item;
@@ -139,7 +120,6 @@ export function buildReport({ contacts, startDate, endDate, preparedDate }) {
     };
   });
 
-  // Executive summary metrics
   const total = leads.length;
   const legitimateConnections = leads.filter(l => l.rawCallData.connected).length;
   const booked = leads.filter(l => l.status.includes('Booked')).length;
@@ -150,7 +130,6 @@ export function buildReport({ contacts, startDate, endDate, preparedDate }) {
   const avgCallAttempts = total > 0 ? (totalCalls / total).toFixed(1) : '0.0';
   const highPriority = leads.filter(l => l.priority === 'high');
 
-  // Call distribution
   const callDist = [0, 1, 2, 3, 4].map(n => ({
     attempts: n === 4 ? '4+' : String(n),
     count: leads.filter(l => n === 4 ? l.rawCallData.totalAttempts >= 4 : l.rawCallData.totalAttempts === n).length,
@@ -184,9 +163,6 @@ export function buildReport({ contacts, startDate, endDate, preparedDate }) {
   };
 }
 
-/**
- * Formats the report as a clean markdown string for Claude to present
- */
 export function formatReportAsMarkdown(report) {
   const s = report.summary;
   const lines = [];
