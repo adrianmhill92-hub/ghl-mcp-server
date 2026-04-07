@@ -35,6 +35,16 @@ function getClient(locationId) {
 
 const ghl = createGHLClient(API_KEY, LOCATION_ID);
 
+// Helper: GHL returns messages as { messages: { messages: [...], nextPage, lastMessageId } }
+// This unwraps it to a flat array regardless of which shape we get back.
+function unwrapMessages(msgData) {
+  if (!msgData) return [];
+  if (Array.isArray(msgData)) return msgData;
+  if (Array.isArray(msgData.messages)) return msgData.messages;
+  if (Array.isArray(msgData.messages?.messages)) return msgData.messages.messages;
+  return [];
+}
+
 // ─── Tool handler ─────────────────────────────────────────────────────────────
 async function handleTool(name, args) {
   const client = args.locationId ? getClient(args.locationId) : ghl;
@@ -78,8 +88,10 @@ async function handleTool(name, args) {
           const conversations = convData?.conversations || [];
           let messages = [];
           if (conversations.length > 0) {
-            const msgData = await client.getConversationMessages(conversations[0].id).catch(() => ({ messages: [] }));
-            messages = msgData?.messages || [];
+            const msgData = await client
+              .getConversationMessages(conversations[0].id)
+              .catch(() => null);
+            messages = unwrapMessages(msgData);
           }
           const callData = analyzeCallData(messages);
           return { contact, callData, messages, notes: notesData };
@@ -190,7 +202,6 @@ if (TRANSPORT === 'stdio') {
   const app = express();
   app.use(express.json());
 
-  // CORS for browser-based clients and Claude's connector fetcher
   app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
@@ -204,13 +215,11 @@ if (TRANSPORT === 'stdio') {
     res.json({ status: 'ok', location: LOCATION_ID, locations: Object.keys(LOCATIONS) })
   );
 
-  // ─── Streamable HTTP transport (modern, Claude connectors) ──────────────────
-  // Stateless mode: each request creates a fresh transport + server.
   app.all('/mcp', async (req, res) => {
     try {
       const srv = createServer();
       const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined, // stateless
+        sessionIdGenerator: undefined,
       });
 
       res.on('close', () => {
@@ -232,7 +241,6 @@ if (TRANSPORT === 'stdio') {
     }
   });
 
-  // ─── Legacy SSE transport (kept for backward compatibility) ─────────────────
   const sseTransports = new Map();
 
   app.post('/messages', async (req, res) => {
