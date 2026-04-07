@@ -3,7 +3,6 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import express from 'express';
-import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { createGHLClient } from './ghl-client.js';
 import { analyzeCallData, buildReport, formatReportAsMarkdown } from './report-builder.js';
@@ -67,8 +66,6 @@ async function handleTool(name, args) {
         };
       }
 
-      // Enrich contacts in batches of ENRICH_CONCURRENCY to avoid GHL rate limits
-      // and to fit comfortably within Railway's 15s edge proxy timeout
       const enrichOne = async (contact) => {
         try {
           const [convData, notesData] = await Promise.all([
@@ -209,7 +206,6 @@ if (TRANSPORT === 'stdio') {
 
   // ─── Streamable HTTP transport (modern, Claude connectors) ──────────────────
   // Stateless mode: each request creates a fresh transport + server.
-  // Avoids session-handshake bugs and works reliably with remote MCP clients.
   app.all('/mcp', async (req, res) => {
     try {
       const srv = createServer();
