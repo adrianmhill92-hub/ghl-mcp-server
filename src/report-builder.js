@@ -111,7 +111,7 @@ export function generateNextAction(status, callData, contact) {
   return 'Continue nurture sequence.';
 }
 
-export function buildReport({ contacts, startDate, endDate, preparedDate }) {
+export function buildReport({ contacts, startDate, endDate, preparedDate, locationName }) {
   const leads = contacts.map((item, index) => {
     const { contact, callData, messages, notes } = item;
     const { status, priority } = classifyLeadStatus(contact, callData, messages, notes);
@@ -157,6 +157,7 @@ export function buildReport({ contacts, startDate, endDate, preparedDate }) {
   }));
 
   return {
+    locationName: locationName || 'Lead Performance',
     reportingPeriod: `${startDate} – ${endDate}`,
     preparedDate: preparedDate || new Date().toLocaleDateString(),
     summary: {
@@ -188,8 +189,8 @@ export function formatReportAsMarkdown(report) {
   const s = report.summary;
   const lines = [];
 
-  lines.push(`# HAWAII WELLNESS CLINIC`);
-  lines.push(`## Weekly Lead Performance Report`);
+  lines.push(`# ${(report.locationName || 'Lead Performance').toUpperCase()}`);
+  lines.push(`## Lead Performance Report`);
   lines.push(`**Reporting Period:** ${report.reportingPeriod} | **Prepared:** ${report.preparedDate}`);
   lines.push('');
   lines.push('---');
@@ -269,8 +270,8 @@ export function formatReportAsMarkdown(report) {
   lines.push('');
   lines.push('---');
   lines.push('');
-  lines.push(`*End of Report — Hawaii Wellness Clinic — ${report.reportingPeriod}*`);
-  lines.push(`*Prepared by Hawaii Wellness Clinic AI System*`);
+  lines.push(`*End of Report — ${report.locationName || 'Lead Performance'} — ${report.reportingPeriod}*`);
+  lines.push(`*Prepared by AI Lead Reporting System*`);
 
   return lines.join('\n');
 }
