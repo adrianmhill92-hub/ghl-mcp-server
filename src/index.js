@@ -133,6 +133,127 @@ async function handleTool(name, args) {
       const report = buildReport({ contacts: enriched, startDate, endDate, locationName, preparedDate: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) });
       return { report, markdown: formatReportAsMarkdown(report), contactCount: contacts.length };
     }
+    case 'ghl_generate_conversation_report': {
+      const { startDate, endDate, tags, limit = 20 } = args;
+
+      const SEARCH_LIMIT = Math.min(limit, 25);
+      const ENRICH_CONCURRENCY = 4;
+
+      const contactsData = await client.searchContacts({ startDate, endDate, tags, limit: SEARCH_LIMIT });
+      const contacts =
+        contactsData?.contacts ||
+        contactsData?.data ||
+        contactsData?.results ||
+        [];
+
+      console.error(`Conversation report: found ${contacts.length} contacts`);
+
+      const locationIdInUse = args.locationId || LOCATION_ID;
+      const locationName = LOCATIONS[locationIdInUse]?.name || 'Unknown Location';
+
+      if (contacts.length === 0) {
+        return {
+          markdown: `# ${locationName} — Conversation Report\n\nNo contacts matched the criteria:\n- **Period:** ${startDate || 'any'} to ${endDate || 'any'}\n- **Tags:** ${tags?.join(', ') || 'none'}`,
+          contactCount: 0,
+        };
+      }
+
+      const enrichOne = async (contact) => {
+        try {
+          const [convData, notesData] = await Promise.all([
+            client.getContactConversations(contact.id).catch(() => ({ conversations: [] })),
+            client.getContactNotes(contact.id).catch(() => ({ notes: [] })),
+          ]);
+          const conversations = convData?.conversations || [];
+          let messages = [];
+          if (conversations.length > 0) {
+            const msgData = await client
+              .getConversationMessages(conversations[0].id)
+              .catch(() => null);
+            messages = unwrapMessages(msgData);
+          }
+          return { contact, conversations, messages, notes: notesData?.notes || [] };
+        } catch (err) {
+          console.error(`Conv enrichment failed for ${contact.id}:`, err.message);
+          return { contact, conversations: [], messages: [], notes: [] };
+        }
+      };
+
+      const enriched = [];
+      for (let i = 0; i < contacts.length; i += ENRICH_CONCURRENCY) {
+        const batch = contacts.slice(i, i + ENRICH_CONCURRENCY);
+        const results = await Promise.all(batch.map(enrichOne));
+        enriched.push(...results);
+        console.error(`Conv enriched ${enriched.length}/${contacts.length}`);
+      }
+
+      // Format as markdown transcripts
+      const stripHtml = (s) => (s || '').replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim();
+      const fmtDate = (d) => {
+        if (!d) return '?';
+        const dt = typeof d === 'number' ? new Date(d) : new Date(d);
+        return isNaN(dt.getTime()) ? '?' : dt.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+      };
+
+      const lines = [];
+      lines.push(`# ${locationName.toUpperCase()} — Conversation Report`);
+      lines.push(`**Period:** ${startDate || 'any'} – ${endDate || 'any'}  •  **Leads:** ${enriched.length}`);
+      lines.push('');
+
+      for (const item of enriched) {
+        const { contact, messages, notes } = item;
+        const name = `${contact.firstName || ''} ${contact.lastName || ''}`.trim() || 'Unnamed Contact';
+        lines.push(`---`);
+        lines.push(``);
+        lines.push(`## ${name}`);
+        lines.push(`**Phone:** ${contact.phone || '—'}  •  **Email:** ${contact.email || '—'}  •  **Tags:** ${(contact.tags || []).join(', ') || '—'}`);
+        lines.push('');
+
+        if (messages.length === 0 && notes.length === 0) {
+          lines.push('_No conversation history or notes._');
+          lines.push('');
+          continue;
+        }
+
+        if (messages.length > 0) {
+          lines.push(`### Messages (${messages.length})`);
+          // Sort oldest first for natural reading order
+          const sorted = [...messages].sort((a, b) => new Date(a.dateAdded) - new Date(b.dateAdded));
+          for (const m of sorted) {
+            const when = fmtDate(m.dateAdded);
+            const dir = m.direction === 'inbound' ? '⬅️ IN' : '➡️ OUT';
+            const type = m.messageType?.replace('TYPE_', '') || 'MSG';
+            let body = '';
+            if (m.messageType === 'TYPE_CALL') {
+              const dur = m.meta?.call?.duration ?? 0;
+              const status = m.meta?.call?.status || m.status || 'unknown';
+              body = `📞 Call (${status}, ${dur}s)`;
+            } else if (m.messageType === 'TYPE_EMAIL') {
+              const subj = m.meta?.email?.subject || '(no subject)';
+              body = `📧 ${subj}`;
+            } else {
+              body = stripHtml(m.body) || '(empty)';
+              if (body.length > 200) body = body.slice(0, 200) + '…';
+            }
+            lines.push(`- **${when}** ${dir} \`${type}\` — ${body}`);
+          }
+          lines.push('');
+        }
+
+        if (notes.length > 0) {
+          lines.push(`### Notes (${notes.length})`);
+          const sortedNotes = [...notes].sort((a, b) => new Date(a.dateAdded) - new Date(b.dateAdded));
+          for (const n of sortedNotes) {
+            const when = fmtDate(n.dateAdded);
+            const text = stripHtml(n.body || n.bodyText) || '(empty)';
+            lines.push(`- **${when}** — ${text}`);
+          }
+          lines.push('');
+        }
+      }
+
+      return { markdown: lines.join('\n'), contactCount: enriched.length };
+    }
     case 'ghl_search_contacts':           return client.searchContacts(args);
     case 'ghl_get_contact':               return client.getContact(args.contactId);
     case 'ghl_update_contact_stage':      return client.updateContactStage(args.contactId, args.pipelineId, args.stageId);
@@ -185,6 +306,7 @@ function createServer() {
 
   t('ghl_list_locations', {}, (a) => handleTool('ghl_list_locations', a));
   t('ghl_generate_lead_report', { startDate: z.string(), endDate: z.string(), tags: z.array(z.string()).optional(), pipelineId: z.string().optional(), locationId: loc }, (a) => handleTool('ghl_generate_lead_report', a));
+  t('ghl_generate_conversation_report', { startDate: z.string().optional(), endDate: z.string().optional(), tags: z.array(z.string()).optional(), limit: z.number().optional(), locationId: loc }, (a) => handleTool('ghl_generate_conversation_report', a));
   t('ghl_search_contacts', { query: z.string().optional(), tags: z.array(z.string()).optional(), startDate: z.string().optional(), endDate: z.string().optional(), limit: z.number().optional(), skip: z.number().optional(), locationId: loc }, (a) => handleTool('ghl_search_contacts', a));
   t('ghl_get_contact', { contactId: z.string(), locationId: loc }, (a) => handleTool('ghl_get_contact', a));
   t('ghl_update_contact_stage', { contactId: z.string(), pipelineId: z.string(), stageId: z.string(), locationId: loc }, (a) => handleTool('ghl_update_contact_stage', a));
