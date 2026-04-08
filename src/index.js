@@ -127,7 +127,10 @@ async function handleTool(name, args) {
         console.error(`Enriched ${enriched.length}/${contacts.length}`);
       }
 
-      const report = buildReport({ contacts: enriched, startDate, endDate, preparedDate: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) });
+      const locationIdInUse = args.locationId || LOCATION_ID;
+      const locationName = LOCATIONS[locationIdInUse]?.name || 'Unknown Location';
+
+      const report = buildReport({ contacts: enriched, startDate, endDate, locationName, preparedDate: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) });
       return { report, markdown: formatReportAsMarkdown(report), contactCount: contacts.length };
     }
     case 'ghl_search_contacts':           return client.searchContacts(args);
