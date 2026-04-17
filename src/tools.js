@@ -170,15 +170,39 @@ export const tools = [
 
   {
     name: 'ghl_get_opportunities',
-    description: 'Get opportunities/deals from a pipeline, optionally filtered by stage.',
+    description: `Get opportunities/deals from a pipeline, optionally filtered by stage or status.
+      Supports cursor pagination via startAfter/startAfterId, or pass fetchAll:true
+      to walk every page server-side in one call (use this for multi-month lead reports).
+      NOTE: startDate filters by updatedAt >= startDate (GHL semantics). endDate is
+      applied client-side against createdAt when fetchAll=true; GHL ignores it otherwise.`,
     inputSchema: {
       type: 'object',
       properties: {
         pipelineId: { type: 'string' },
         stageId: { type: 'string', description: 'Optional: filter by specific stage' },
-        startDate: { type: 'string' },
-        endDate: { type: 'string' },
-        limit: { type: 'number' },
+        status: {
+          type: 'string',
+          description: "Optional: filter by status. One of 'open', 'won', 'lost', 'abandoned', 'all'.",
+        },
+        startDate: { type: 'string', description: 'MM-DD-YYYY. Filters by updatedAt >= startDate.' },
+        endDate: { type: 'string', description: 'MM-DD-YYYY. Applied client-side when fetchAll=true.' },
+        limit: { type: 'number', description: 'Records per page (GHL hard max: 100). Default 100.' },
+        startAfter: {
+          type: 'number',
+          description: 'Pagination cursor: updatedAt ms of the last record from the prior page. From meta.startAfter.',
+        },
+        startAfterId: {
+          type: 'string',
+          description: 'Pagination cursor: opportunity id of the last record from the prior page. From meta.startAfterId.',
+        },
+        fetchAll: {
+          type: 'boolean',
+          description: 'If true, paginate through every page and return the combined result. Default false.',
+        },
+        maxPages: {
+          type: 'number',
+          description: 'Safety cap when fetchAll=true. Default 20 (up to 2,000 records).',
+        },
       },
     },
   },
