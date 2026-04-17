@@ -160,13 +160,90 @@ export function createGHLClient(apiKey, locationId) {
       return res.data;
     },
 
-    async getOpportunities({ pipelineId, stageId, startDate, endDate, limit = 100 }) {
-      const params = { location_id: locationId, limit };
-      if (pipelineId) params.pipeline_id = pipelineId;
-      if (stageId) params.pipeline_stage_id = stageId;
-      if (startDate) params.date = startDate;
-      const res = await client.get('/opportunities/search', { params });
-      return res.data;
+    async getOpportunities({
+      pipelineId,
+      stageId,
+      status,
+      startDate,
+      endDate,
+      limit = 100,
+      startAfter,
+      startAfterId,
+      fetchAll = false,
+      maxPages = 20,
+    } = {}) {
+      // Build the params GHL's /opportunities/search expects.
+      const buildParams = (cursor) => {
+        const p = { location_id: locationId, limit };
+        if (pipelineId) p.pipeline_id = pipelineId;
+        if (stageId) p.pipeline_stage_id = stageId;
+        if (status) p.status = status;                 // open | won | lost | abandoned | all
+        if (startDate) p.date = startDate;             // MM-DD-YYYY; means updatedAt >=
+        if (endDate) p.endDate = endDate;              // GHL ignores server-side; we enforce client-side below
+        if (cursor) {
+          p.startAfter = cursor.startAfter;
+          p.startAfterId = cursor.startAfterId;
+        } else {
+          if (startAfter !== undefined) p.startAfter = startAfter;
+          if (startAfterId !== undefined) p.startAfterId = startAfterId;
+        }
+        return p;
+      };
+
+      const fetchPage = async (cursor) => {
+        const res = await client.get('/opportunities/search', { params: buildParams(cursor) });
+        return res.data;
+      };
+
+      // Single-page mode — returns GHL's native response incl. meta.startAfter/startAfterId
+      if (!fetchAll) {
+        return await fetchPage();
+      }
+
+      // Multi-page mode — walk the cursor until exhausted or maxPages hit.
+      // GHL ignores endDate server-side, so enforce it client-side by filtering on createdAt.
+      const endDateTs = endDate ? parseMMDDYYYYEndOfDay(endDate) : null;
+
+      const allOps = [];
+      let pagesFetched = 0;
+      let cursor;
+      let lastMeta = null;
+
+      while (pagesFetched < maxPages) {
+        const data = await fetchPage(cursor);
+        lastMeta = data.meta;
+        pagesFetched += 1;
+
+        const ops = data.opportunities || [];
+        const filtered = endDateTs == null
+          ? ops
+          : ops.filter((op) => {
+              const t = Date.parse(op.createdAt || op.dateAdded || '');
+              return Number.isFinite(t) ? t <= endDateTs : true;
+            });
+
+        allOps.push(...filtered);
+
+        if (!data.meta?.startAfter || !data.meta?.startAfterId || !data.meta?.nextPage) {
+          break;
+        }
+
+        cursor = {
+          startAfter: data.meta.startAfter,
+          startAfterId: data.meta.startAfterId,
+        };
+      }
+
+      return {
+        opportunities: allOps,
+        meta: {
+          total: lastMeta?.total ?? allOps.length,
+          returned: allOps.length,
+          pagesFetched,
+          truncated: pagesFetched >= maxPages && !!lastMeta?.nextPage,
+          endDateApplied: endDate ?? null,
+        },
+      };
     },
 
     async moveOpportunity(opportunityId, stageId) {
@@ -253,4 +330,15 @@ export function createGHLClient(apiKey, locationId) {
       return res.data;
     },
   };
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+// Parses MM-DD-YYYY to an end-of-day UTC timestamp in ms.
+function parseMMDDYYYYEndOfDay(s) {
+  const m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(s);
+  if (!m) return null;
+  const [, mm, dd, yyyy] = m;
+  const t = Date.parse(`${yyyy}-${mm}-${dd}T23:59:59.999Z`);
+  return Number.isFinite(t) ? t : null;
 }
